@@ -1,8 +1,8 @@
 {
-  "name": "example-graph",
-  "version": "0.0.1",
-  "description": "A starter template for creating a LangGraph workflow.",
-  "main": "my_app/graph.ts",
+  "name": "support-assistant",
+  "version": "0.1.0",
+  "description": "Enterprise Support Autopilot using LangGraph.js",
+  "main": "src/graph/index.ts",
   "author": "Your Name",
   "license": "MIT",
   "private": true,
