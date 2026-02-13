@@ -1,25 +1,36 @@
 import { describe, it, expect } from "@jest/globals";
-import {
-  SUPERVISOR_SYSTEM_PROMPT,
-  createSupportSupervisor,
-} from "../../src/agents/supervisor/index.js";
+import { createSupportSupervisor } from "../../src/agents/supervisor/index.js";
+import { createSupervisorSystemPrompt } from "../../src/prompts/supervisor.js";
 
 describe("Supervisor Agent", () => {
-  describe("SUPERVISOR_SYSTEM_PROMPT", () => {
-    it("should reference databricks_agent", () => {
-      expect(SUPERVISOR_SYSTEM_PROMPT).toContain("databricks_agent");
+  describe("createSupervisorSystemPrompt", () => {
+    const prompt = createSupervisorSystemPrompt({
+      date: new Date().toISOString(),
+      activeAgents: [
+        "databricks",
+        "dynatrace",
+        "knowledge",
+        "operations",
+        "human_interface",
+        "health_check",
+        "filesystem",
+      ],
     });
 
-    it("should reference dynatrace_agent", () => {
-      expect(SUPERVISOR_SYSTEM_PROMPT).toContain("dynatrace_agent");
+    it("should reference databricks", () => {
+      expect(prompt).toContain('name="databricks"');
     });
 
-    it("should reference knowledge_agent", () => {
-      expect(SUPERVISOR_SYSTEM_PROMPT).toContain("knowledge_agent");
+    it("should reference dynatrace", () => {
+      expect(prompt).toContain('name="dynatrace"');
     });
 
-    it("should reference operations_agent", () => {
-      expect(SUPERVISOR_SYSTEM_PROMPT).toContain("operations_agent");
+    it("should reference knowledge", () => {
+      expect(prompt).toContain('name="knowledge"');
+    });
+
+    it("should reference operations", () => {
+      expect(prompt).toContain('name="operations"');
     });
   });
 

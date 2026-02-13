@@ -1,6 +1,8 @@
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { createAgent } from "langchain";
+import { thinkTool } from "../../tools/think.js";
 import { apiWriteTool } from "./tools/apiWriteTool.js";
+import { OPERATIONS_SYSTEM_PROMPT } from "../../prompts/agents/operations.js";
 
 export { apiWriteTool } from "./tools/apiWriteTool.js";
 
@@ -11,6 +13,7 @@ export { apiWriteTool } from "./tools/apiWriteTool.js";
 export const createOperationsAgent = (llm: BaseChatModel) =>
   createAgent({
     model: llm,
-    tools: [apiWriteTool],
+    tools: [thinkTool, apiWriteTool],
     name: "operations_agent",
+    systemPrompt: OPERATIONS_SYSTEM_PROMPT,
   });

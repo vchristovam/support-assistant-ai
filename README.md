@@ -11,6 +11,15 @@ A **multi-agent AI system** for automating Tier-2 technical support tasks. Built
 
 ## Features
 
+### New Capabilities (v2)
+
+- **Centralized Prompt System**: XML-style prompts with dynamic injection
+- **Advanced State Management**: Custom reducers and subgraph states
+- **Parallel Execution**: Concurrent worker execution
+- **Explicit Routing**: Command pattern for control flow
+- **Tool Enhancements**: Budgets, error handling, token limits
+- **Diagnostics Subgraph**: Specialized health check workflow
+
 ### Core Architecture
 
 - **Supervisor Pattern**: Intelligent routing to specialized agents

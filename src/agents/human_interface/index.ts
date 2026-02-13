@@ -1,6 +1,8 @@
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { createAgent } from "langchain";
+import { thinkTool } from "../../tools/think.js";
 import { askHumanTool } from "./tools/askHumanTool.js";
+import { HUMAN_INTERFACE_SYSTEM_PROMPT } from "../../prompts/agents/human_interface.js";
 
 export { askHumanTool } from "./tools/askHumanTool.js";
 
@@ -11,7 +13,8 @@ export { askHumanTool } from "./tools/askHumanTool.js";
 export const createHumanInterfaceAgent = (llm: BaseChatModel) => {
   return createAgent({
     model: llm,
-    tools: [askHumanTool],
+    tools: [thinkTool, askHumanTool],
     name: "human_interface_agent",
+    systemPrompt: HUMAN_INTERFACE_SYSTEM_PROMPT,
   });
 };

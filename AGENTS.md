@@ -204,3 +204,7 @@ describe("Routers", () => {
 - Run `npm format` before committing
 - Trailing commas in function parameters (Prettier default)
 - Double quotes for strings
+
+### Don'ts
+- Don't use `console.*` functions in production code
+- Don't commit and push any changes

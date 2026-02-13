@@ -1,4 +1,71 @@
+import { z } from "zod";
 import { loadEnv } from "./env.js";
+
+export interface UIConfig<T> {
+  type: "text" | "number" | "boolean" | "slider" | "select";
+  default: T;
+  description: string;
+  min?: number;
+  max?: number;
+  step?: number;
+  options?: Array<{ label: string; value: T }>;
+}
+
+export const createConfigField = <T>(
+  schema: z.ZodType<T>,
+  uiConfig: UIConfig<T>,
+): z.ZodDefault<z.ZodType<T>> => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return schema.default(uiConfig.default as unknown as any).describe(JSON.stringify(uiConfig));
+};
+
+export const azureApiKey = createConfigField(z.string(), {
+  type: "text",
+  default: "",
+  description: "Azure OpenAI API Key for authentication",
+});
+
+export const azureEndpoint = createConfigField(z.string(), {
+  type: "text",
+  default: "",
+  description: "Azure OpenAI endpoint URL",
+});
+
+export const azureDeploymentName = createConfigField(z.string(), {
+  type: "text",
+  default: "",
+  description: "Azure OpenAI deployment name",
+});
+
+export const azureApiVersion = createConfigField(z.string(), {
+  type: "text",
+  default: "2024-02-01",
+  description: "Azure OpenAI API version",
+});
+
+export const databaseConnectionString = createConfigField(z.string(), {
+  type: "text",
+  default: "",
+  description: "Database connection string",
+});
+
+export const maxIterations = createConfigField(z.number(), {
+  type: "slider",
+  default: 10,
+  min: 1,
+  max: 50,
+  step: 1,
+  description: "Maximum number of graph iterations",
+});
+
+export const maxConcurrentWorkers = createConfigField(z.number(), {
+  type: "slider",
+  default: 5,
+  min: 1,
+  max: 20,
+  step: 1,
+  description: "Maximum number of workers to run in parallel",
+});
 
 export const config = {
   get app() {

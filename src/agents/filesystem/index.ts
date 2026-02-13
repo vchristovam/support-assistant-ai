@@ -1,6 +1,8 @@
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { createAgent } from "langchain";
+import { thinkTool } from "../../tools/think.js";
 import { getFilesystemTools } from "./tools.js";
+import { FILESYSTEM_SYSTEM_PROMPT } from "../../prompts/agents/filesystem.js";
 
 /**
  * Creates the filesystem agent.
@@ -13,9 +15,8 @@ export const createFilesystemAgent = (llm: BaseChatModel) => {
 
   return createAgent({
     model: llm,
-    tools,
+    tools: [thinkTool, ...tools],
     name: "filesystem_agent",
-    systemPrompt:
-      "You are a filesystem agent. You can read files, write files, and list directories. Use the provided tools to interact with the filesystem.",
+    systemPrompt: FILESYSTEM_SYSTEM_PROMPT,
   });
 };
