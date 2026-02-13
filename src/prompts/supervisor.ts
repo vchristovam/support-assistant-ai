@@ -1,7 +1,7 @@
 // XML-style supervisor prompt
 // Thin wrapper that re-exports the factory function for clean API
 
-import { createSupervisorPrompt } from './utils.js';
+import { createSupervisorPrompt } from "./utils.js";
 
 /**
  * Factory function for creating supervisor system prompts.

@@ -1,7 +1,7 @@
 // Phase 1: Prompt Engineering Overhaul
 // TypeScript types for the prompts module
 
-export type PromptRole = 'system' | 'user' | 'assistant';
+export type PromptRole = "system" | "user" | "assistant";
 
 export interface Message {
   role: PromptRole;

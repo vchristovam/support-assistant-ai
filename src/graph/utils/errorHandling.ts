@@ -9,7 +9,7 @@ export interface ErrorHandlingOptions<R> {
 
 export const wrapToolWithErrorHandling = <T, R>(
   fn: (args: T) => Promise<R>,
-  options: ErrorHandlingOptions<R> = {}
+  options: ErrorHandlingOptions<R> = {},
 ) => {
   return async (args: T): Promise<R> => {
     let lastError: any;
@@ -22,11 +22,16 @@ export const wrapToolWithErrorHandling = <T, R>(
         lastError = error;
 
         if (options.logError) {
-          console.error(`Error in tool execution (attempt ${i + 1}/${retries + 1}):`, error);
+          console.error(
+            `Error in tool execution (attempt ${i + 1}/${retries + 1}):`,
+            error,
+          );
         }
 
         if (i < retries && options.retryDelay) {
-          await new Promise(resolve => setTimeout(resolve, options.retryDelay));
+          await new Promise((resolve) =>
+            setTimeout(resolve, options.retryDelay),
+          );
         }
       }
     }
@@ -72,7 +77,7 @@ export const isTokenLimitError = (error: any): boolean => {
  */
 export const handleTokenLimitError = (
   messages: BaseMessage[],
-  keepLast = 10
+  keepLast = 10,
 ): BaseMessage[] => {
   if (messages.length <= keepLast) return messages;
 

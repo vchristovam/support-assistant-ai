@@ -1,46 +1,55 @@
 import { describe, it, expect, jest } from "@jest/globals";
-import { SystemMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
-import { 
-  wrapToolWithErrorHandling, 
-  isTokenLimitError, 
-  handleTokenLimitError 
+import {
+  SystemMessage,
+  HumanMessage,
+  AIMessage,
+} from "@langchain/core/messages";
+import {
+  wrapToolWithErrorHandling,
+  isTokenLimitError,
+  handleTokenLimitError,
 } from "./errorHandling.js";
 
 describe("wrapToolWithErrorHandling", () => {
   it("should wrap function and return result on success", async () => {
-    const mockFn = jest.fn<(args: { arg: string }) => Promise<string>>().mockResolvedValue("success");
+    const mockFn = jest
+      .fn<(args: { arg: string }) => Promise<string>>()
+      .mockResolvedValue("success");
     const wrapped = wrapToolWithErrorHandling(mockFn);
-    
+
     const result = await wrapped({ arg: "test" });
-    
+
     expect(result).toBe("success");
     expect(mockFn).toHaveBeenCalledWith({ arg: "test" });
     expect(mockFn).toHaveBeenCalledTimes(1);
   });
 
   it("should retry on failure and eventually succeed", async () => {
-    const mockFn = jest.fn<() => Promise<string>>()
+    const mockFn = jest
+      .fn<() => Promise<string>>()
       .mockRejectedValueOnce(new Error("fail 1"))
       .mockRejectedValueOnce(new Error("fail 2"))
       .mockResolvedValue("success");
-    
+
     const wrapped = wrapToolWithErrorHandling(mockFn, { retries: 2 });
-    
+
     const result = await wrapped({});
-    
+
     expect(result).toBe("success");
     expect(mockFn).toHaveBeenCalledTimes(3);
   });
 
   it("should return fallback value if all retries fail", async () => {
-    const mockFn = jest.fn<() => Promise<string>>().mockRejectedValue(new Error("fail"));
-    const wrapped = wrapToolWithErrorHandling(mockFn, { 
-      retries: 1, 
-      fallback: "fallback-value" 
+    const mockFn = jest
+      .fn<() => Promise<string>>()
+      .mockRejectedValue(new Error("fail"));
+    const wrapped = wrapToolWithErrorHandling(mockFn, {
+      retries: 1,
+      fallback: "fallback-value",
     });
-    
+
     const result = await wrapped({});
-    
+
     expect(result).toBe("fallback-value");
     expect(mockFn).toHaveBeenCalledTimes(2);
   });
@@ -48,47 +57,51 @@ describe("wrapToolWithErrorHandling", () => {
   it("should throw last error if all retries fail and no fallback is provided", async () => {
     const error1 = new Error("fail 1");
     const error2 = new Error("fail 2");
-    const mockFn = jest.fn<() => Promise<string>>()
+    const mockFn = jest
+      .fn<() => Promise<string>>()
       .mockRejectedValueOnce(error1)
       .mockRejectedValueOnce(error2);
-    
+
     const wrapped = wrapToolWithErrorHandling(mockFn, { retries: 1 });
-    
+
     await expect(wrapped({})).rejects.toThrow("fail 2");
     expect(mockFn).toHaveBeenCalledTimes(2);
   });
 
   it("should log error if logError option is true", async () => {
-    const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => { return; });
+    const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {
+      return;
+    });
     const error = new Error("test error");
     const mockFn = jest.fn<() => Promise<string>>().mockRejectedValue(error);
-    
+
     const wrapped = wrapToolWithErrorHandling(mockFn, { logError: true });
-    
+
     await expect(wrapped({})).rejects.toThrow(error);
-    
+
     expect(consoleSpy).toHaveBeenCalledWith(
       expect.stringContaining("Error in tool execution"),
-      error
+      error,
     );
-    
+
     consoleSpy.mockRestore();
   });
 
   it("should respect retryDelay if provided", async () => {
     const startTime = Date.now();
-    const mockFn = jest.fn<() => Promise<string>>()
+    const mockFn = jest
+      .fn<() => Promise<string>>()
       .mockRejectedValueOnce(new Error("fail"))
       .mockResolvedValue("success");
-    
-    const wrapped = wrapToolWithErrorHandling(mockFn, { 
-      retries: 1, 
-      retryDelay: 100 
+
+    const wrapped = wrapToolWithErrorHandling(mockFn, {
+      retries: 1,
+      retryDelay: 100,
     });
-    
+
     const result = await wrapped({});
     const duration = Date.now() - startTime;
-    
+
     expect(result).toBe("success");
     expect(duration).toBeGreaterThanOrEqual(100);
     expect(mockFn).toHaveBeenCalledTimes(2);
@@ -99,7 +112,9 @@ describe("isTokenLimitError", () => {
   it("should return true for token limit error messages", () => {
     expect(isTokenLimitError(new Error("Token limit reached"))).toBe(true);
     expect(isTokenLimitError(new Error("Context length exceeded"))).toBe(true);
-    expect(isTokenLimitError(new Error("Maximum context length is 4096"))).toBe(true);
+    expect(isTokenLimitError(new Error("Maximum context length is 4096"))).toBe(
+      true,
+    );
   });
 
   it("should return true for specific error codes", () => {

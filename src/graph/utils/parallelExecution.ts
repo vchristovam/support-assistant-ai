@@ -30,7 +30,7 @@ export interface AggregatedResults<T> {
  */
 export const executeWorkersInParallel = async <T>(
   workers: Worker<T>[],
-  maxConcurrency = 5
+  maxConcurrency = 5,
 ): Promise<WorkerResult<T>[]> => {
   const results: WorkerResult<T>[] = [];
 
@@ -44,7 +44,7 @@ export const executeWorkersInParallel = async <T>(
         } catch (error) {
           return { name: worker.name, result: null, error: error as Error };
         }
-      })
+      }),
     );
     results.push(...batchResults);
   }
@@ -57,9 +57,11 @@ export const executeWorkersInParallel = async <T>(
  * @param results - Array of worker results from executeWorkersInParallel
  * @returns Aggregated results with success/failure breakdown
  */
-export const aggregateResults = <T>(results: WorkerResult<T>[]): AggregatedResults<T> => {
-  const successful = results.filter(r => r.error === undefined);
-  const failed = results.filter(r => r.error !== undefined);
+export const aggregateResults = <T>(
+  results: WorkerResult<T>[],
+): AggregatedResults<T> => {
+  const successful = results.filter((r) => r.error === undefined);
+  const failed = results.filter((r) => r.error !== undefined);
 
   return {
     successful,
@@ -85,17 +87,17 @@ export const formatResults = <T>(aggregated: AggregatedResults<T>): string => {
 
   if (aggregated.successful.length > 0) {
     lines.push(`\n  Successful workers:`);
-    aggregated.successful.forEach(r => {
+    aggregated.successful.forEach((r) => {
       lines.push(`    - ${r.name}`);
     });
   }
 
   if (aggregated.failed.length > 0) {
     lines.push(`\n  Failed workers:`);
-    aggregated.failed.forEach(r => {
-      lines.push(`    - ${r.name}: ${r.error?.message || 'Unknown error'}`);
+    aggregated.failed.forEach((r) => {
+      lines.push(`    - ${r.name}: ${r.error?.message || "Unknown error"}`);
     });
   }
 
-  return lines.join('\n');
+  return lines.join("\n");
 };

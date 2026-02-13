@@ -23,14 +23,21 @@ describe("parallelDetection", () => {
       const request = "- Task 1\n- Task 2\n* Task 3";
       const analysis = analyzeRequest(request);
       expect(analysis.isParallelizable).toBe(true);
-      expect(analysis.independentSubtasks).toEqual(["Task 1", "Task 2", "Task 3"]);
+      expect(analysis.independentSubtasks).toEqual([
+        "Task 1",
+        "Task 2",
+        "Task 3",
+      ]);
     });
 
     it("should detect parallelizable subtasks with numbered lists", () => {
       const request = "1. First task\n2. Second task";
       const analysis = analyzeRequest(request);
       expect(analysis.isParallelizable).toBe(true);
-      expect(analysis.independentSubtasks).toEqual(["First task", "Second task"]);
+      expect(analysis.independentSubtasks).toEqual([
+        "First task",
+        "Second task",
+      ]);
     });
 
     it("should not mark single task as parallelizable", () => {
@@ -79,11 +86,7 @@ describe("parallelDetection", () => {
         },
       };
       const plan = planExecution(analysis);
-      expect(plan.batches).toEqual([
-        ["A"],
-        ["B"],
-        ["C"],
-      ]);
+      expect(plan.batches).toEqual([["A"], ["B"], ["C"]]);
     });
 
     it("should handle sequential fallback for circular dependencies", () => {

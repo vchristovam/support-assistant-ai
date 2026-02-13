@@ -170,7 +170,8 @@ export const AGENT_REGISTRY: Record<string, AgentDescription> = {
    */
   filesystem: {
     name: "filesystem",
-    purpose: "File operations including reading, writing, and directory management.",
+    purpose:
+      "File operations including reading, writing, and directory management.",
     whenToUse: [
       "Reading files",
       "Writing files",

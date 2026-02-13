@@ -38,8 +38,8 @@ The reflection parameter should be a structured analysis following the format ab
       reflection: z
         .string()
         .describe(
-          "A structured reflection addressing Current State, Gap Analysis, Quality Check, and Next Steps"
+          "A structured reflection addressing Current State, Gap Analysis, Quality Check, and Next Steps",
         ),
     }),
-  }
+  },
 );

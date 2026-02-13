@@ -72,7 +72,8 @@ export const createIterationTrackingWrapper = (
     const maxToolCalls = input.maxToolCalls ?? 50;
 
     if (iterationCount >= maxIterations || toolCallCount >= maxToolCalls) {
-      const reason = iterationCount >= maxIterations ? "iterations" : "tool calls";
+      const reason =
+        iterationCount >= maxIterations ? "iterations" : "tool calls";
       const limit =
         iterationCount >= maxIterations ? maxIterations : maxToolCalls;
 

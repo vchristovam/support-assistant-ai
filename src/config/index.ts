@@ -16,7 +16,9 @@ export const createConfigField = <T>(
   uiConfig: UIConfig<T>,
 ): z.ZodDefault<z.ZodType<T>> => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return schema.default(uiConfig.default as unknown as any).describe(JSON.stringify(uiConfig));
+  return schema
+    .default(uiConfig.default as unknown as any)
+    .describe(JSON.stringify(uiConfig));
 };
 
 export const azureApiKey = createConfigField(z.string(), {

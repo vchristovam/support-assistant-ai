@@ -1,4 +1,9 @@
-import { Annotation, messagesStateReducer, START, END } from "@langchain/langgraph";
+import {
+  Annotation,
+  messagesStateReducer,
+  START,
+  END,
+} from "@langchain/langgraph";
 import { BaseMessage, BaseMessageLike } from "@langchain/core/messages";
 import { createSubgraph } from "../utils/subgraph.js";
 
@@ -58,19 +63,17 @@ const generateReport = async (
   };
 };
 
-export const diagnosticsSubgraph = createSubgraph<typeof DiagnosticsState.State>(
-  "diagnostics",
-  DiagnosticsState,
-  (builder) => {
-    builder
-      .addNode("collect_metrics", collectMetrics)
-      .addNode("analyze_logs", analyzeLogs)
-      .addNode("correlate_events", correlateEvents)
-      .addNode("generate_report", generateReport)
-      .addEdge(START, "collect_metrics")
-      .addEdge("collect_metrics", "analyze_logs")
-      .addEdge("analyze_logs", "correlate_events")
-      .addEdge("correlate_events", "generate_report")
-      .addEdge("generate_report", END);
-  },
-);
+export const diagnosticsSubgraph = createSubgraph<
+  typeof DiagnosticsState.State
+>("diagnostics", DiagnosticsState, (builder) => {
+  builder
+    .addNode("collect_metrics", collectMetrics)
+    .addNode("analyze_logs", analyzeLogs)
+    .addNode("correlate_events", correlateEvents)
+    .addNode("generate_report", generateReport)
+    .addEdge(START, "collect_metrics")
+    .addEdge("collect_metrics", "analyze_logs")
+    .addEdge("analyze_logs", "correlate_events")
+    .addEdge("correlate_events", "generate_report")
+    .addEdge("generate_report", END);
+});

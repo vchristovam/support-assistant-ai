@@ -25,7 +25,7 @@ All agents must be registered in the `AGENT_REGISTRY` to allow for automatic cro
 ### Before (V1)
 
 ```python
-PROMPT = """You are a support agent. 
+PROMPT = """You are a support agent.
 Your task is to help the user with their issues.
 Use the following context: {context}
 """

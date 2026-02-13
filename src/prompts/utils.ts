@@ -1,7 +1,7 @@
 // Phase 1: Prompt Engineering Overhaul
 // Factory functions for creating prompts
 
-import { getAllAgents, formatAgentForPrompt } from './agents.js';
+import { getAllAgents, formatAgentForPrompt } from "./agents.js";
 
 /**
  * Context for prompt factory functions
@@ -24,7 +24,7 @@ export function createUserPrompt(userMessage: string): string {
  * Formats conversation history
  */
 export function formatConversation(history: string[]): string {
-  return history.join('\n---\n');
+  return history.join("\n---\n");
 }
 
 /**
@@ -32,23 +32,25 @@ export function formatConversation(history: string[]): string {
  */
 export function createSupervisorPrompt(context: PromptContext): string {
   const currentTime = context.date || new Date().toISOString();
-  const activeAgentsList = context.activeAgents.join(', ');
+  const activeAgentsList = context.activeAgents.join(", ");
 
   const allAgents = getAllAgents();
   const availableAgentsXml = allAgents
-    .filter(agent => context.activeAgents.includes(agent.name))
+    .filter((agent) => context.activeAgents.includes(agent.name))
     .map(formatAgentForPrompt)
-    .join('\n\n');
+    .join("\n\n");
 
-  const errorsXml = context.recentErrors && context.recentErrors.length > 0
-    ? `<RecentErrors>\n${context.recentErrors.map(err => `  <Error>${err}</Error>`).join('\n')}\n</RecentErrors>`
-    : '';
+  const errorsXml =
+    context.recentErrors && context.recentErrors.length > 0
+      ? `<RecentErrors>\n${context.recentErrors.map((err) => `  <Error>${err}</Error>`).join("\n")}\n</RecentErrors>`
+      : "";
 
-  const customContextXml = context.customContext && Object.keys(context.customContext).length > 0
-    ? `<CustomContext>\n${Object.entries(context.customContext)
-        .map(([key, value]) => `  <${key}>${JSON.stringify(value)}</${key}>`)
-        .join('\n')}\n</CustomContext>`
-    : '';
+  const customContextXml =
+    context.customContext && Object.keys(context.customContext).length > 0
+      ? `<CustomContext>\n${Object.entries(context.customContext)
+          .map(([key, value]) => `  <${key}>${JSON.stringify(value)}</${key}>`)
+          .join("\n")}\n</CustomContext>`
+      : "";
 
   return `You are a support triage lead responsible for routing user requests to the appropriate specialized agent.
 

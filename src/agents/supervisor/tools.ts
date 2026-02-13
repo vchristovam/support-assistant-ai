@@ -16,7 +16,7 @@ import { maxConcurrentWorkers } from "../../config/index.js";
 
 /**
  * Creates the transfer tools for the supervisor to communicate with worker agents.
- * 
+ *
  * @param llm - Language model used to instantiate worker agents.
  * @returns Array of tools available to the supervisor.
  */
@@ -59,11 +59,16 @@ ${agentDatabricks.whenToUse.map((w) => `- ${w}`).join("\n")}
 
 Input: One or more natural language requests about data or analytics.`,
       schema: z.object({
-        request: z.string().optional().describe("Single natural language request"),
+        request: z
+          .string()
+          .optional()
+          .describe("Single natural language request"),
         requests: z
           .array(z.string())
           .optional()
-          .describe("Batch of natural language requests to process in parallel"),
+          .describe(
+            "Batch of natural language requests to process in parallel",
+          ),
       }),
     },
   );
@@ -97,11 +102,16 @@ ${agentDynatrace.whenToUse.map((w) => `- ${w}`).join("\n")}
 
 Input: One or more natural language requests about system/monitoring.`,
       schema: z.object({
-        request: z.string().optional().describe("Single natural language request"),
+        request: z
+          .string()
+          .optional()
+          .describe("Single natural language request"),
         requests: z
           .array(z.string())
           .optional()
-          .describe("Batch of natural language requests to process in parallel"),
+          .describe(
+            "Batch of natural language requests to process in parallel",
+          ),
       }),
     },
   );
@@ -135,11 +145,16 @@ ${agentKnowledge.whenToUse.map((w) => `- ${w}`).join("\n")}
 
 Input: One or more natural language requests about documentation, policies, or saving knowledge.`,
       schema: z.object({
-        request: z.string().optional().describe("Single natural language request"),
+        request: z
+          .string()
+          .optional()
+          .describe("Single natural language request"),
         requests: z
           .array(z.string())
           .optional()
-          .describe("Batch of natural language requests to process in parallel"),
+          .describe(
+            "Batch of natural language requests to process in parallel",
+          ),
       }),
     },
   );
@@ -175,11 +190,16 @@ WARNING: These actions require human approval before proceeding.
 
 Input: One or more natural language requests for data modification.`,
       schema: z.object({
-        request: z.string().optional().describe("Single natural language request"),
+        request: z
+          .string()
+          .optional()
+          .describe("Single natural language request"),
         requests: z
           .array(z.string())
           .optional()
-          .describe("Batch of natural language requests to process in parallel"),
+          .describe(
+            "Batch of natural language requests to process in parallel",
+          ),
       }),
     },
   );

@@ -7,7 +7,7 @@ import { maxConcurrentWorkers } from "../../config/index.js";
 
 /**
  * Creates the supervisor and tools nodes.
- * 
+ *
  * @param llm - Language model to use.
  * @param tools - Tools available to the supervisor.
  * @param systemPrompt - System prompt for the supervisor.
@@ -32,10 +32,9 @@ export const createSupervisorNodes = (
       });
     }
 
-    const response = await (llm as any).bindTools(tools).invoke([
-      { role: "system", content: systemPrompt },
-      ...state.messages,
-    ]);
+    const response = await (llm as any)
+      .bindTools(tools)
+      .invoke([{ role: "system", content: systemPrompt }, ...state.messages]);
 
     if (response.tool_calls && response.tool_calls.length > 0) {
       return createCommand("tools", {

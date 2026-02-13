@@ -2,7 +2,7 @@
   "name": "support-assistant",
   "version": "0.1.0",
   "description": "Enterprise Support Autopilot using LangGraph.js",
-  "main": "src/graph/index.ts",
+  "main": "dist/src/server/index.js",
   "author": "Your Name",
   "license": "MIT",
   "private": true,

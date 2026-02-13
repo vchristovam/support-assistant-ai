@@ -21,8 +21,12 @@ describe("isOverrideUpdate", () => {
   });
 
   it("should return false for objects without override flag", () => {
-    expect(isOverrideUpdate({ value: "test" } as unknown as string)).toBe(false);
-    expect(isOverrideUpdate({ override: false, value: "test" } as unknown as string)).toBe(false);
+    expect(isOverrideUpdate({ value: "test" } as unknown as string)).toBe(
+      false,
+    );
+    expect(
+      isOverrideUpdate({ override: false, value: "test" } as unknown as string),
+    ).toBe(false);
   });
 
   it("should return false for null", () => {

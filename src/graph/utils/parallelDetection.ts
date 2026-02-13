@@ -15,7 +15,10 @@ export interface ExecutionPlan {
  */
 export function analyzeRequest(request: string): RequestAnalysis {
   const trimmedRequest = request.trim();
-  const lines = trimmedRequest.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  const lines = trimmedRequest
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
 
   let subtasks: string[] = [];
 
@@ -48,7 +51,10 @@ export function analyzeRequest(request: string): RequestAnalysis {
 export function planExecution(analysis: RequestAnalysis): ExecutionPlan {
   if (!analysis.isParallelizable || analysis.independentSubtasks.length === 0) {
     return {
-      batches: analysis.independentSubtasks.length > 0 ? [[analysis.independentSubtasks[0]]] : [],
+      batches:
+        analysis.independentSubtasks.length > 0
+          ? [[analysis.independentSubtasks[0]]]
+          : [],
     };
   }
 
@@ -74,7 +80,9 @@ export function planExecution(analysis: RequestAnalysis): ExecutionPlan {
 
     batches.push(currentBatch);
     currentBatch.forEach((task) => completedTasks.add(task));
-    remainingTasks = remainingTasks.filter((task) => !currentBatch.includes(task));
+    remainingTasks = remainingTasks.filter(
+      (task) => !currentBatch.includes(task),
+    );
   }
 
   return { batches };

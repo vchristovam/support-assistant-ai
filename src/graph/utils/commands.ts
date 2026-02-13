@@ -5,7 +5,7 @@ export const START = "__start__";
 
 export const createCommand = <T extends string>(
   goto: T,
-  update?: Record<string, unknown>
+  update?: Record<string, unknown>,
 ) => new Command({ goto, update });
 
 export type RouteTarget =

@@ -17,7 +17,7 @@ export class SubgraphRegistry {
   private subgraphs: Map<string, CompiledStateGraph<any, any, any>> = new Map();
 
   // eslint-disable-next-line @typescript-eslint/no-empty-function
-  private constructor() { }
+  private constructor() {}
 
   public static getInstance(): SubgraphRegistry {
     if (!SubgraphRegistry.instance) {

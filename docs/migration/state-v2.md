@@ -41,15 +41,15 @@ from langgraph.graph.message import add_messages
 class TeamStateAnnotation(TypedDict):
     # Use Annotated with add_messages for proper message merging
     messages: Annotated[Sequence[BaseMessage], add_messages]
-    
+
     # Built-in iteration tracking
     iterations: int
     max_iterations: int
-    
+
     # Custom fields with specific reducers
     next_agent: str
     task_completed: bool
-    
+
     # New V2 specific metadata
     metadata: dict
 ```
