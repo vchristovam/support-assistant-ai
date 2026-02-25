@@ -398,10 +398,41 @@ const setupSSEHeaders = (
   reply: FastifyReply,
   extraHeaders?: Record<string, string>,
 ): void => {
+  const getHeaderAsString = (name: string): string | undefined => {
+    const value = reply.getHeader(name);
+    if (typeof value === "string") {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      return value.join(", ");
+    }
+    return undefined;
+  };
+
+  const corsHeaders: Record<string, string> = {};
+  const allowOrigin = getHeaderAsString("Access-Control-Allow-Origin");
+  const allowCredentials = getHeaderAsString("Access-Control-Allow-Credentials");
+  const exposeHeaders = getHeaderAsString("Access-Control-Expose-Headers");
+  const vary = getHeaderAsString("Vary");
+
+  if (allowOrigin) {
+    corsHeaders["Access-Control-Allow-Origin"] = allowOrigin;
+  }
+  if (allowCredentials) {
+    corsHeaders["Access-Control-Allow-Credentials"] = allowCredentials;
+  }
+  if (exposeHeaders) {
+    corsHeaders["Access-Control-Expose-Headers"] = exposeHeaders;
+  }
+  if (vary) {
+    corsHeaders.Vary = vary;
+  }
+
   reply.raw.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
+    ...corsHeaders,
     ...extraHeaders,
   });
 };

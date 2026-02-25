@@ -258,6 +258,64 @@ describe("Fastify Server", () => {
     expect(streamResponse.body).toContain("event: metadata");
   }, 30_000);
 
+  it("OPTIONS /threads/:thread_id/runs/stream should return CORS preflight headers", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/threads",
+      payload: {},
+    });
+    const { thread_id } = JSON.parse(createResponse.body);
+
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: `/threads/${thread_id}/runs/stream`,
+      headers: {
+        origin: "http://localhost:5173",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type,authorization,x-user-id",
+      },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers["access-control-allow-origin"]).toBe("*");
+    expect(response.headers["access-control-allow-methods"]).toContain("POST");
+    expect(response.headers["access-control-allow-headers"]).toContain(
+      "content-type",
+    );
+    expect(response.headers["access-control-expose-headers"]).toContain(
+      "Content-Location",
+    );
+  });
+
+  it("POST /threads/:thread_id/runs/stream should include CORS headers when origin is present", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/threads",
+      payload: {},
+    });
+    const { thread_id } = JSON.parse(createResponse.body);
+
+    const streamResponse = await app.inject({
+      method: "POST",
+      url: `/threads/${thread_id}/runs/stream`,
+      headers: {
+        origin: "http://localhost:5173",
+      },
+      payload: {
+        assistant_id: "agent",
+        input: {
+          messages: [{ type: "human", content: "hello" }],
+        },
+      },
+    });
+
+    expect(streamResponse.statusCode).toBe(200);
+    expect(streamResponse.headers["access-control-allow-origin"]).toBe("*");
+    expect(streamResponse.headers["access-control-expose-headers"]).toContain(
+      "Content-Location",
+    );
+  }, 30_000);
+
   it("POST /threads/:thread_id/runs/:run_id/cancel should return run", async () => {
     const createResponse = await app.inject({
       method: "POST",

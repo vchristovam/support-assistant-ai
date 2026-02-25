@@ -3,6 +3,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { config } from "../config/index.js";
 import { initializeInfrastructure } from "./infrastructure.js";
 import { registerAuthHook } from "./middleware/auth.js";
+import { registerCorsHook } from "./middleware/cors.js";
 import { registerTelemetry } from "./middleware/telemetry.js";
 import { registerThreadRunRoutes } from "./threadRuns.js";
 
@@ -11,6 +12,9 @@ export const createApp = async (llm?: BaseChatModel) => {
 
   // Initialize infrastructure (checkpointer, SQL pool, repositories)
   const { checkpointer, threadRepository } = await initializeInfrastructure();
+
+  // Register CORS before other middleware so OPTIONS preflight is handled early.
+  registerCorsHook(app);
 
   // Register authentication and telemetry middleware
   registerAuthHook(app);
