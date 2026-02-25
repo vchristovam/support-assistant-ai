@@ -21,10 +21,20 @@ type RunStatus =
   | "running"
   | "success"
   | "error"
-  | "interrupted";
+  | "interrupted"
+  | "timeout";
 
 const validThreadStatuses = ["idle", "busy", "interrupted", "error"] as const;
 type ValidThreadStatus = (typeof validThreadStatuses)[number];
+const validRunStatuses = [
+  "pending",
+  "running",
+  "success",
+  "error",
+  "interrupted",
+  "timeout",
+] as const;
+type ValidRunStatus = (typeof validRunStatuses)[number];
 
 interface RunRecord {
   run_id: string;
@@ -49,8 +59,97 @@ interface RunBody {
   command?: Record<string, unknown>;
   stream_mode?: StreamMode | StreamMode[];
   stream_subgraphs?: boolean;
+  stream_resumable?: boolean;
   metadata?: Record<string, unknown>;
   config?: Record<string, unknown>;
+  context?: Record<string, unknown>;
+  multitask_strategy?: "reject" | "interrupt" | "rollback" | "enqueue";
+  on_disconnect?: "cancel" | "continue";
+  checkpoint?: Record<string, unknown>;
+  checkpoint_id?: string;
+  durability?: "sync" | "async" | "exit";
+  signal?: AbortSignal;
+}
+
+interface SearchThreadsBody {
+  metadata?: Record<string, unknown>;
+  ids?: string[];
+  limit?: number;
+  offset?: number;
+  status?: string;
+  values?: Record<string, unknown>;
+}
+
+interface CountThreadsBody {
+  metadata?: Record<string, unknown>;
+  values?: Record<string, unknown>;
+  status?: string;
+}
+
+interface SearchRunsQuery {
+  limit?: string | number;
+  offset?: string | number;
+  status?: string;
+}
+
+interface SearchRunsBody {
+  limit?: number;
+  offset?: number;
+  status?: string;
+}
+
+interface CancelRunQuery {
+  wait?: string | number;
+  action?: "interrupt" | "rollback";
+}
+
+interface ThreadPatchBody {
+  metadata?: Record<string, unknown>;
+  ttl?: unknown;
+}
+
+interface ThreadStateCheckpointBody {
+  checkpoint?: Record<string, unknown>;
+  subgraphs?: boolean;
+}
+
+interface ThreadStateUpdateBody {
+  values?: Record<string, unknown>;
+  checkpoint_id?: string;
+  checkpoint?: Record<string, unknown>;
+  as_node?: string;
+}
+
+interface ThreadStatePatchBody {
+  metadata?: Record<string, unknown>;
+}
+
+interface ThreadHistoryBody {
+  limit?: number;
+  before?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  checkpoint?: Record<string, unknown>;
+}
+
+interface AssistantSearchBody {
+  graph_id?: string;
+  name?: string;
+  metadata?: Record<string, unknown>;
+  limit?: number;
+  offset?: number;
+}
+
+interface StreamEventRecord {
+  id: number;
+  event: string;
+  data: unknown;
+}
+
+interface RunStreamRecord {
+  nextEventId: number;
+  events: StreamEventRecord[];
+  listeners: Set<FastifyReply>;
+  completed: boolean;
 }
 
 interface InterruptBody {
@@ -68,9 +167,50 @@ export interface ThreadRunServices {
 }
 
 const runs = new Map<string, RunRecord>();
+const runsById = new Map<string, RunRecord>();
+const runAbortControllers = new Map<string, AbortController>();
+const runStreams = new Map<string, RunStreamRecord>();
+const STATELESS_THREAD_ID = "__stateless__";
 
 const getRunKey = (threadId: string, runId: string): string =>
   `${threadId}:${runId}`;
+const getStatelessRunKey = (runId: string): string =>
+  getRunKey(STATELESS_THREAD_ID, runId);
+
+const isFinalRunStatus = (status: RunStatus): boolean =>
+  status === "success" ||
+  status === "error" ||
+  status === "interrupted" ||
+  status === "timeout";
+
+const toPositiveInt = (
+  value: string | number | undefined,
+  fallback: number,
+): number => {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? Math.trunc(value) : fallback;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+  }
+  return fallback;
+};
+
+const matchesRecord = (
+  filter: Record<string, unknown> | undefined,
+  candidate: Record<string, unknown>,
+): boolean => {
+  if (!filter) {
+    return true;
+  }
+  for (const [key, value] of Object.entries(filter)) {
+    if (candidate[key] !== value) {
+      return false;
+    }
+  }
+  return true;
+};
 
 const getUserId = (request: unknown): string => {
   const user = (request as Record<string, unknown>).user as
@@ -194,7 +334,24 @@ const setRunStatus = (
     delete run.error;
   }
   runs.set(getRunKey(run.thread_id, run.run_id), run);
+  runsById.set(run.run_id, run);
   return run;
+};
+
+const registerRun = (run: RunRecord): RunRecord => {
+  runs.set(getRunKey(run.thread_id, run.run_id), run);
+  runsById.set(run.run_id, run);
+  return run;
+};
+
+const getRunRecord = (
+  threadId: string | undefined,
+  runId: string,
+): RunRecord | undefined => {
+  if (threadId) {
+    return runs.get(getRunKey(threadId, runId));
+  }
+  return runsById.get(runId);
 };
 
 const writeSSE = (
@@ -206,6 +363,126 @@ const writeSSE = (
   reply.raw.write(`id: ${id}\n`);
   reply.raw.write(`event: ${event}\n`);
   reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+};
+
+const getOrCreateRunStream = (runKey: string): RunStreamRecord => {
+  const existing = runStreams.get(runKey);
+  if (existing) {
+    return existing;
+  }
+  const created: RunStreamRecord = {
+    nextEventId: 1,
+    events: [],
+    listeners: new Set(),
+    completed: false,
+  };
+  runStreams.set(runKey, created);
+  return created;
+};
+
+const resetRunStream = (runKey: string): RunStreamRecord => {
+  const stream = getOrCreateRunStream(runKey);
+  stream.nextEventId = 1;
+  stream.events = [];
+  stream.completed = false;
+  for (const listener of stream.listeners) {
+    if (!listener.raw.writableEnded) {
+      listener.raw.end();
+    }
+  }
+  stream.listeners.clear();
+  return stream;
+};
+
+const setupSSEHeaders = (
+  reply: FastifyReply,
+  extraHeaders?: Record<string, string>,
+): void => {
+  reply.raw.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    ...extraHeaders,
+  });
+};
+
+const emitRunStreamEvent = (
+  runKey: string,
+  event: string,
+  data: unknown,
+): void => {
+  const stream = getOrCreateRunStream(runKey);
+  const eventRecord: StreamEventRecord = {
+    id: stream.nextEventId++,
+    event,
+    data,
+  };
+  stream.events.push(eventRecord);
+
+  for (const listener of stream.listeners) {
+    if (listener.raw.writableEnded) {
+      stream.listeners.delete(listener);
+      continue;
+    }
+    try {
+      writeSSE(listener, eventRecord.id, eventRecord.event, eventRecord.data);
+    } catch {
+      stream.listeners.delete(listener);
+    }
+  }
+};
+
+const completeRunStream = (runKey: string): void => {
+  const stream = getOrCreateRunStream(runKey);
+  stream.completed = true;
+  for (const listener of stream.listeners) {
+    if (!listener.raw.writableEnded) {
+      listener.raw.end();
+    }
+  }
+  stream.listeners.clear();
+};
+
+const attachRunStreamListener = (
+  runKey: string,
+  reply: FastifyReply,
+  afterEventId: number,
+  extraHeaders?: Record<string, string>,
+): void => {
+  const stream = getOrCreateRunStream(runKey);
+  setupSSEHeaders(reply, extraHeaders);
+
+  for (const eventRecord of stream.events) {
+    if (eventRecord.id <= afterEventId) {
+      continue;
+    }
+    writeSSE(reply, eventRecord.id, eventRecord.event, eventRecord.data);
+  }
+
+  if (stream.completed) {
+    reply.raw.end();
+    return;
+  }
+
+  stream.listeners.add(reply);
+  const cleanup = () => {
+    stream.listeners.delete(reply);
+  };
+  reply.raw.on("close", cleanup);
+  reply.raw.on("error", cleanup);
+};
+
+const getLastEventId = (request: unknown): number => {
+  const headers = (request as { headers?: Record<string, unknown> }).headers;
+  const raw = headers?.["last-event-id"];
+  if (typeof raw !== "string") {
+    return 0;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Math.trunc(parsed));
 };
 
 const buildRunnableConfig = (
@@ -291,12 +568,131 @@ const loadThreadValues = async (
   }
 };
 
+const buildStateResponseFromTuple = (
+  threadId: string,
+  tuple: unknown,
+): Record<string, unknown> => {
+  const values = parseCheckpointValues(tuple);
+  const tupleConfig =
+    tuple && typeof tuple === "object"
+      ? ((tuple as Record<string, unknown>).config as
+          | Record<string, unknown>
+          | undefined)
+      : undefined;
+  const metadata =
+    tuple && typeof tuple === "object"
+      ? ((tuple as Record<string, unknown>).metadata as
+          | Record<string, unknown>
+          | undefined)
+      : undefined;
+
+  return {
+    values,
+    next: [],
+    tasks: [],
+    metadata: metadata ?? {},
+    config: tupleConfig ?? { configurable: { thread_id: threadId } },
+    checkpoint: {
+      thread_id: threadId,
+      checkpoint_id:
+        typeof tupleConfig?.configurable === "object"
+          ? (tupleConfig.configurable as Record<string, unknown>).checkpoint_id
+          : undefined,
+      checkpoint_ns:
+        typeof tupleConfig?.configurable === "object"
+          ? (tupleConfig.configurable as Record<string, unknown>).checkpoint_ns
+          : undefined,
+    },
+  };
+};
+
+const loadThreadHistory = async (
+  checkpointer: BaseCheckpointSaver,
+  threadId: string,
+  limit: number,
+): Promise<Record<string, unknown>[]> => {
+  const states: Record<string, unknown>[] = [];
+  const iterator = checkpointer.list(
+    {
+      configurable: { thread_id: threadId },
+    } as RunnableConfig,
+    { limit },
+  );
+
+  for await (const tuple of iterator) {
+    states.push(buildStateResponseFromTuple(threadId, tuple));
+  }
+  return states;
+};
+
 const isInterruptedResult = (result: unknown): boolean => {
   if (!result || typeof result !== "object") {
     return false;
   }
   const rawInterrupt = (result as Record<string, unknown>).__interrupt__;
   return Array.isArray(rawInterrupt) && rawInterrupt.length > 0;
+};
+
+const listRunsByThread = (
+  threadId: string,
+  options: SearchRunsBody = {},
+): RunRecord[] => {
+  const limit = options.limit ?? 10;
+  const offset = options.offset ?? 0;
+  const status =
+    typeof options.status === "string" &&
+    validRunStatuses.includes(options.status as ValidRunStatus)
+      ? (options.status as ValidRunStatus)
+      : undefined;
+
+  const filtered = Array.from(runs.values())
+    .filter((run) => run.thread_id === threadId)
+    .filter((run) => (status ? run.status === status : true))
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+
+  return filtered.slice(offset, offset + limit);
+};
+
+const waitForRunCompletion = async (
+  run: RunRecord,
+  timeoutMs = 60_000,
+): Promise<RunRecord> => {
+  if (isFinalRunStatus(run.status)) {
+    return run;
+  }
+
+  const runKey = getRunKey(run.thread_id, run.run_id);
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const latest = runs.get(runKey) ?? run;
+    if (isFinalRunStatus(latest.status)) {
+      return latest;
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 100);
+    });
+  }
+  return setRunStatus(run, "timeout", "Run join timeout");
+};
+
+const createAssistantRecord = (
+  assistantId: string,
+  graphId: string,
+  metadata: Record<string, unknown> = {},
+): Record<string, unknown> => {
+  const now = getIsoNow();
+  return {
+    assistant_id: assistantId,
+    graph_id: graphId,
+    config: {},
+    context: {},
+    metadata,
+    version: 1,
+    created_at: now,
+    updated_at: now,
+    name: assistantId,
+    description: null,
+  };
 };
 
 /**
@@ -310,6 +706,171 @@ export const registerThreadRunRoutes = (
 
   app.get("/health", async (_request, reply) => {
     return reply.send({ status: "ok" });
+  });
+
+  app.get("/info", async (_request, reply) => {
+    return reply.send({
+      version: "0.1.0",
+      langgraph_js_version: "1.x",
+      langgraph_py_version: null,
+      flags: {
+        assistive_ui: false,
+        subgraphs: true,
+        threads: true,
+        runs: true,
+      },
+    });
+  });
+
+  app.post("/assistants/search", async (request, reply) => {
+    const body = (request.body || {}) as AssistantSearchBody;
+    const assistants = [
+      createAssistantRecord("agent", "agent"),
+      createAssistantRecord("support-agent", "support-agent"),
+    ];
+
+    const filtered = assistants
+      .filter((assistant) =>
+        body.graph_id ? assistant.graph_id === body.graph_id : true,
+      )
+      .filter((assistant) =>
+        body.name
+          ? typeof assistant.name === "string" &&
+            assistant.name.toLowerCase().includes(body.name.toLowerCase())
+          : true,
+      )
+      .filter((assistant) =>
+        matchesRecord(
+          body.metadata,
+          (assistant.metadata as Record<string, unknown>) ?? {},
+        ),
+      );
+
+    const offset = Math.max(0, body.offset ?? 0);
+    const limit = Math.max(1, body.limit ?? 10);
+    return reply.send(filtered.slice(offset, offset + limit));
+  });
+
+  app.get("/assistants/:assistant_id", async (request, reply) => {
+    const { assistant_id: assistantId } = request.params as {
+      assistant_id: string;
+    };
+    return reply.send(createAssistantRecord(assistantId, assistantId));
+  });
+
+  app.get("/assistants/:assistant_id/graph", async (_request, reply) => {
+    return reply.send({
+      nodes: [],
+      edges: [],
+    });
+  });
+
+  app.get("/assistants/:assistant_id/schemas", async (_request, reply) => {
+    return reply.send({
+      state_schema: {},
+      config_schema: {},
+    });
+  });
+
+  app.get("/assistants/:assistant_id/subgraphs", async (_request, reply) => {
+    return reply.send({});
+  });
+
+  app.get(
+    "/assistants/:assistant_id/subgraphs/:namespace",
+    async (_request, reply) => {
+      return reply.send({});
+    },
+  );
+
+  app.post("/threads/search", async (request, reply) => {
+    try {
+      const userId = getUserId(request);
+      const body = (request.body || {}) as SearchThreadsBody;
+      const limit = Math.max(1, body.limit ?? 10);
+      const offset = Math.max(0, body.offset ?? 0);
+
+      let status: ValidThreadStatus | undefined;
+      if (typeof body.status === "string" && body.status.length > 0) {
+        if (!validThreadStatuses.includes(body.status as ValidThreadStatus)) {
+          return reply.status(400).send({
+            error: "BadRequest",
+            message: `status must be one of: ${validThreadStatuses.join(", ")}`,
+          });
+        }
+        status = body.status as ValidThreadStatus;
+      }
+
+      const threads = await threadRepository.getThreadsByUser(userId, {
+        limit: Math.max(limit + offset, 50),
+        offset: 0,
+        status,
+      });
+
+      const filtered = threads
+        .filter((thread) =>
+          body.ids && body.ids.length > 0
+            ? body.ids.includes(thread.thread_id)
+            : true,
+        )
+        .filter((thread) => matchesRecord(body.metadata, thread.metadata))
+        .slice(offset, offset + limit);
+
+      const response = filtered.map((thread) => ({
+        thread_id: thread.thread_id,
+        created_at: thread.created_at.toISOString(),
+        updated_at: thread.updated_at.toISOString(),
+        metadata: thread.metadata,
+        status: thread.status,
+        values: {},
+        interrupts: {},
+      }));
+
+      return reply.send(response);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to search threads";
+      return reply.status(500).send({
+        error: "InternalError",
+        message,
+      });
+    }
+  });
+
+  app.post("/threads/count", async (request, reply) => {
+    try {
+      const userId = getUserId(request);
+      const body = (request.body || {}) as CountThreadsBody;
+      let status: ValidThreadStatus | undefined;
+
+      if (typeof body.status === "string" && body.status.length > 0) {
+        if (!validThreadStatuses.includes(body.status as ValidThreadStatus)) {
+          return reply.status(400).send({
+            error: "BadRequest",
+            message: `status must be one of: ${validThreadStatuses.join(", ")}`,
+          });
+        }
+        status = body.status as ValidThreadStatus;
+      }
+
+      const threads = await threadRepository.getThreadsByUser(userId, {
+        limit: 10_000,
+        offset: 0,
+        status,
+      });
+      const count = threads.filter((thread) =>
+        matchesRecord(body.metadata, thread.metadata),
+      ).length;
+
+      return reply.send(count);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Failed to count threads";
+      return reply.status(500).send({
+        error: "InternalError",
+        message,
+      });
+    }
   });
 
   app.get("/threads", async (request, reply) => {
@@ -418,6 +979,104 @@ export const registerThreadRunRoutes = (
       }
     });
 
+  app.post("/threads/:thread_id/copy", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId } = request.params as { thread_id: string };
+        const sourceThread = await threadRepository.getThread(threadId, userId);
+
+        if (!sourceThread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        const copiedThread = await threadRepository.createThread({
+          user_id: userId,
+          title: sourceThread.title ?? undefined,
+          metadata: sourceThread.metadata,
+        });
+        const sourceValues = await loadThreadValues(checkpointer, threadId);
+        return reply.send(createThreadResponse(copiedThread, sourceValues));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to copy thread";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
+  app.patch("/threads/:thread_id", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId } = request.params as { thread_id: string };
+        const body = (request.body || {}) as ThreadPatchBody;
+        const thread = await threadRepository.getThread(threadId, userId);
+
+        if (!thread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        if (body.metadata && typeof body.metadata === "object") {
+          await threadRepository.updateThreadMetadata(threadId, body.metadata);
+        }
+
+        const updated = await threadRepository.getThread(threadId, userId);
+        if (!updated) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        const values = await loadThreadValues(checkpointer, threadId);
+        return reply.send(createThreadResponse(updated, values));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to patch thread";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
+  app.delete("/threads/:thread_id", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId } = request.params as { thread_id: string };
+        const thread = await threadRepository.getThread(threadId, userId);
+
+        if (!thread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        await threadRepository.deleteThread(threadId);
+        try {
+          await checkpointer.deleteThread(threadId);
+        } catch {
+          // Ignore checkpointer cleanup failures on delete.
+        }
+        return reply.status(204).send();
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to delete thread";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
   app.get("/threads/:thread_id", async (request, reply) => {
       try {
         const userId = getUserId(request);
@@ -462,45 +1121,166 @@ export const registerThreadRunRoutes = (
           } as RunnableConfig)
           .catch(() => undefined);
 
-        const values = parseCheckpointValues(tuple);
-        const tupleConfig =
-          tuple && typeof tuple === "object"
-            ? ((tuple as unknown as Record<string, unknown>).config as
-                | Record<string, unknown>
-                | undefined)
-            : undefined;
-        const metadata =
-          tuple && typeof tuple === "object"
-            ? ((tuple as unknown as Record<string, unknown>).metadata as
-                | Record<string, unknown>
-                | undefined)
-            : undefined;
-
-        return reply.send({
-          values,
-          next: [],
-          tasks: [],
-          metadata: metadata ?? {},
-          config: tupleConfig ?? { configurable: { thread_id: threadId } },
-          checkpoint: {
-            thread_id: threadId,
-            checkpoint_id:
-              typeof tupleConfig?.configurable === "object"
-                ? (
-                    tupleConfig.configurable as Record<string, unknown>
-                  ).checkpoint_id
-                : undefined,
-            checkpoint_ns:
-              typeof tupleConfig?.configurable === "object"
-                ? (
-                    tupleConfig.configurable as Record<string, unknown>
-                  ).checkpoint_ns
-                : undefined,
-          },
-        });
+        return reply.send(buildStateResponseFromTuple(threadId, tuple));
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Failed to retrieve state";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
+  app.get("/threads/:thread_id/state/:checkpoint_id", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId, checkpoint_id: checkpointId } =
+          request.params as { thread_id: string; checkpoint_id: string };
+        const thread = await threadRepository.getThread(threadId, userId);
+
+        if (!thread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        const tuple = await checkpointer
+          .getTuple({
+            configurable: {
+              thread_id: threadId,
+              checkpoint_id: checkpointId,
+            },
+          } as RunnableConfig)
+          .catch(() => undefined);
+
+        return reply.send(buildStateResponseFromTuple(threadId, tuple));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to retrieve state";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
+  app.post("/threads/:thread_id/state/checkpoint", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId } = request.params as { thread_id: string };
+        const body = (request.body || {}) as ThreadStateCheckpointBody;
+        const thread = await threadRepository.getThread(threadId, userId);
+
+        if (!thread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        const checkpointConfig =
+          typeof body.checkpoint?.configurable === "object" &&
+          body.checkpoint?.configurable !== null
+            ? (body.checkpoint.configurable as Record<string, unknown>)
+            : {};
+
+        const tuple = await checkpointer
+          .getTuple({
+            configurable: {
+              ...checkpointConfig,
+              thread_id: threadId,
+            },
+          } as RunnableConfig)
+          .catch(() => undefined);
+
+        return reply.send(buildStateResponseFromTuple(threadId, tuple));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to retrieve state";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
+  app.post("/threads/:thread_id/state", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId } = request.params as { thread_id: string };
+        const body = (request.body || {}) as ThreadStateUpdateBody;
+        const thread = await threadRepository.getThread(threadId, userId);
+
+        if (!thread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        if (body.values && typeof body.values === "object") {
+          const run = createRun(threadId, "agent", { source: "update_state" });
+          registerRun(run);
+          setRunStatus(run, "running");
+
+          try {
+            const graph = createGraph(checkpointer, llm);
+            const config = buildRunnableConfig(threadId, {
+              configurable: {
+                checkpoint_id: body.checkpoint_id,
+              },
+            });
+            await graph.invoke(body.values, config);
+            setRunStatus(run, "success");
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : "Failed to update state";
+            setRunStatus(run, "error", message);
+          }
+        }
+
+        const tuple = await checkpointer
+          .getTuple({
+            configurable: { thread_id: threadId },
+          } as RunnableConfig)
+          .catch(() => undefined);
+        return reply.send(buildStateResponseFromTuple(threadId, tuple));
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to update state";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
+  app.patch("/threads/:thread_id/state", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId } = request.params as { thread_id: string };
+        const body = (request.body || {}) as ThreadStatePatchBody;
+        const thread = await threadRepository.getThread(threadId, userId);
+
+        if (!thread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        if (body.metadata && typeof body.metadata === "object") {
+          await threadRepository.updateThreadMetadata(threadId, {
+            ...thread.metadata,
+            ...body.metadata,
+          });
+        }
+        return reply.status(204).send();
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to patch state";
         return reply.status(500).send({
           error: "InternalError",
           message,
@@ -521,51 +1301,42 @@ export const registerThreadRunRoutes = (
           });
         }
 
-        const states: Record<string, unknown>[] = [];
-        const limitRaw = (request.query as { limit?: string })?.limit;
-        const limit =
-          typeof limitRaw === "string" && Number.isFinite(Number(limitRaw))
-            ? Number(limitRaw)
-            : 10;
+        const limit = Math.max(
+          1,
+          toPositiveInt((request.query as { limit?: string })?.limit, 10),
+        );
+        const states = await loadThreadHistory(checkpointer, threadId, limit).catch(
+          () => [],
+        );
+        return reply.send(states);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to retrieve history";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
 
-        try {
-          const iterator = checkpointer.list(
-            {
-              configurable: { thread_id: threadId },
-            } as RunnableConfig,
-            { limit },
-          );
+  app.post("/threads/:thread_id/history", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId } = request.params as { thread_id: string };
+        const body = (request.body || {}) as ThreadHistoryBody;
+        const thread = await threadRepository.getThread(threadId, userId);
 
-          for await (const tuple of iterator) {
-            const tupleAny = tuple as unknown as Record<string, unknown>;
-            const tupleConfig =
-              (tupleAny.config as Record<string, unknown> | undefined) ?? {};
-            states.push({
-              values: parseCheckpointValues(tuple),
-              next: [],
-              tasks: [],
-              metadata:
-                (tupleAny.metadata as Record<string, unknown> | undefined) ?? {},
-              config: tupleConfig,
-              checkpoint: {
-                thread_id: threadId,
-                checkpoint_id:
-                  typeof tupleConfig.configurable === "object"
-                    ? (tupleConfig.configurable as Record<string, unknown>)
-                        .checkpoint_id
-                    : undefined,
-                checkpoint_ns:
-                  typeof tupleConfig.configurable === "object"
-                    ? (tupleConfig.configurable as Record<string, unknown>)
-                        .checkpoint_ns
-                    : undefined,
-              },
-            });
-          }
-        } catch {
-          return reply.send([]);
+        if (!thread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
         }
 
+        const limit = Math.max(1, body.limit ?? 10);
+        const states = await loadThreadHistory(checkpointer, threadId, limit).catch(
+          () => [],
+        );
         return reply.send(states);
       } catch (error) {
         const message =
@@ -599,16 +1370,22 @@ export const registerThreadRunRoutes = (
         }
 
         const run = createRun(threadId, body.assistant_id, body.metadata ?? {});
-        runs.set(getRunKey(threadId, run.run_id), run);
+        registerRun(run);
         setRunStatus(run, "pending");
 
         void (async () => {
           await updateThreadStatusSafe(threadRepository, threadId, "busy");
           setRunStatus(run, "running");
+          const runKey = getRunKey(threadId, run.run_id);
+          const abortController = new AbortController();
+          runAbortControllers.set(runKey, abortController);
 
           try {
             const graph = createGraph(checkpointer, llm);
-            const config = buildRunnableConfig(threadId, body.config);
+            const config = {
+              ...buildRunnableConfig(threadId, body.config),
+              signal: abortController.signal,
+            } as RunnableConfig;
             const invokeInput = body.command
               ? new Command(body.command)
               : (body.input ?? {});
@@ -627,13 +1404,28 @@ export const registerThreadRunRoutes = (
             setRunStatus(run, "success");
             await updateThreadStatusSafe(threadRepository, threadId, "idle");
           } catch (error) {
+            if (abortController.signal.aborted) {
+              setRunStatus(run, "interrupted", "Run cancelled");
+              await updateThreadStatusSafe(
+                threadRepository,
+                threadId,
+                "interrupted",
+              );
+              return;
+            }
             const message =
               error instanceof Error ? error.message : "Run execution failed";
             setRunStatus(run, "error", message);
             await updateThreadStatusSafe(threadRepository, threadId, "error");
+          } finally {
+            runAbortControllers.delete(runKey);
           }
         })();
 
+        reply.header(
+          "Content-Location",
+          `/threads/${threadId}/runs/${run.run_id}`,
+        );
         return reply.send(run);
       } catch (error) {
         const message =
@@ -645,11 +1437,61 @@ export const registerThreadRunRoutes = (
       }
     });
 
+  app.get("/threads/:thread_id/runs", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId } = request.params as { thread_id: string };
+        const query = (request.query || {}) as SearchRunsQuery;
+        const thread = await threadRepository.getThread(threadId, userId);
+
+        if (!thread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        const status =
+          typeof query.status === "string" ? query.status : undefined;
+        if (
+          status &&
+          !validRunStatuses.includes(status as ValidRunStatus)
+        ) {
+          return reply.status(400).send({
+            error: "BadRequest",
+            message: `status must be one of: ${validRunStatuses.join(", ")}`,
+          });
+        }
+
+        const runsList = listRunsByThread(threadId, {
+          limit: Math.max(1, toPositiveInt(query.limit, 10)),
+          offset: Math.max(0, toPositiveInt(query.offset, 0)),
+          status,
+        });
+        return reply.send(runsList);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to list runs";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
   app.get("/threads/:thread_id/runs/:run_id", async (request, reply) => {
+      const userId = getUserId(request);
       const { thread_id: threadId, run_id: runId } = request.params as {
         thread_id: string;
         run_id: string;
       };
+      const thread = await threadRepository.getThread(threadId, userId);
+      if (!thread) {
+        return reply.status(404).send({
+          error: "NotFound",
+          message: "Thread not found",
+        });
+      }
       const run = runs.get(getRunKey(threadId, runId));
       if (!run) {
         return reply.status(404).send({
@@ -658,6 +1500,178 @@ export const registerThreadRunRoutes = (
         });
       }
       return reply.send(run);
+    });
+
+  app.post("/threads/:thread_id/runs/:run_id/cancel", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId, run_id: runId } = request.params as {
+          thread_id: string;
+          run_id: string;
+        };
+        const query = (request.query || {}) as CancelRunQuery;
+        const thread = await threadRepository.getThread(threadId, userId);
+        if (!thread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        const run = runs.get(getRunKey(threadId, runId));
+        if (!run) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Run not found",
+          });
+        }
+
+        const runKey = getRunKey(threadId, runId);
+        runAbortControllers.get(runKey)?.abort();
+        setRunStatus(
+          run,
+          "interrupted",
+          query.action === "rollback" ? "Run rolled back" : "Run cancelled",
+        );
+        await updateThreadStatusSafe(threadRepository, threadId, "interrupted");
+
+        const shouldWait =
+          typeof query.wait === "string" ? query.wait === "1" : false;
+        if (shouldWait) {
+          const completed = await waitForRunCompletion(run);
+          return reply.send(completed);
+        }
+
+        return reply.send(run);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to cancel run";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
+  app.get("/threads/:thread_id/runs/:run_id/join", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId, run_id: runId } = request.params as {
+          thread_id: string;
+          run_id: string;
+        };
+        const thread = await threadRepository.getThread(threadId, userId);
+        if (!thread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        const run = runs.get(getRunKey(threadId, runId));
+        if (!run) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Run not found",
+          });
+        }
+
+        const completed = await waitForRunCompletion(run);
+        return reply.send(completed);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to join run";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
+  app.get("/threads/:thread_id/runs/:run_id/stream", async (request, reply) => {
+      const userId = getUserId(request);
+      const { thread_id: threadId, run_id: runId } = request.params as {
+        thread_id: string;
+        run_id: string;
+      };
+      const query = (request.query || {}) as {
+        cancel_on_disconnect?: string;
+      };
+
+      const thread = await threadRepository.getThread(threadId, userId);
+      if (!thread) {
+        return reply.status(404).send({
+          error: "NotFound",
+          message: "Thread not found",
+        });
+      }
+
+      const run = runs.get(getRunKey(threadId, runId));
+      if (!run) {
+        return reply.status(404).send({
+          error: "NotFound",
+          message: "Run not found",
+        });
+      }
+
+      const runKey = getRunKey(threadId, runId);
+      const stream = getOrCreateRunStream(runKey);
+      if (stream.events.length === 0) {
+        emitRunStreamEvent(runKey, "metadata", {
+          run_id: run.run_id,
+          thread_id: threadId,
+          assistant_id: run.assistant_id,
+        });
+        emitRunStreamEvent(runKey, "end", {});
+        completeRunStream(runKey);
+      }
+
+      const lastEventId = getLastEventId(request);
+      attachRunStreamListener(runKey, reply, lastEventId);
+
+      if (query.cancel_on_disconnect === "1") {
+        reply.raw.on("close", async () => {
+          const current = runs.get(runKey);
+          if (!current || isFinalRunStatus(current.status)) {
+            return;
+          }
+          runAbortControllers.get(runKey)?.abort();
+          setRunStatus(current, "interrupted", "Client disconnected");
+          await updateThreadStatusSafe(threadRepository, threadId, "interrupted");
+        });
+      }
+    });
+
+  app.delete("/threads/:thread_id/runs/:run_id", async (request, reply) => {
+      const userId = getUserId(request);
+      const { thread_id: threadId, run_id: runId } = request.params as {
+        thread_id: string;
+        run_id: string;
+      };
+      const thread = await threadRepository.getThread(threadId, userId);
+      if (!thread) {
+        return reply.status(404).send({
+          error: "NotFound",
+          message: "Thread not found",
+        });
+      }
+
+      const runKey = getRunKey(threadId, runId);
+      const run = runs.get(runKey);
+      if (!run) {
+        return reply.status(404).send({
+          error: "NotFound",
+          message: "Run not found",
+        });
+      }
+
+      runAbortControllers.get(runKey)?.abort();
+      runAbortControllers.delete(runKey);
+      runs.delete(runKey);
+      runsById.delete(runId);
+      runStreams.delete(runKey);
+
+      return reply.status(204).send();
     });
 
   app.post("/threads/:thread_id/runs/:run_id/interrupt", async (request, reply) => {
@@ -753,23 +1767,23 @@ export const registerThreadRunRoutes = (
       }
 
       const run = createRun(threadId, body.assistant_id, body.metadata ?? {});
+      const runKey = getRunKey(threadId, run.run_id);
+      registerRun(run);
       setRunStatus(run, "running");
-      runs.set(getRunKey(threadId, run.run_id), run);
+      resetRunStream(runKey);
+      attachRunStreamListener(runKey, reply, 0, {
+        "Content-Location": `/threads/${threadId}/runs/${run.run_id}`,
+      });
       await updateThreadStatusSafe(threadRepository, threadId, "busy");
 
-      reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      });
-
-      let eventId = 1;
+      const abortController = new AbortController();
+      runAbortControllers.set(runKey, abortController);
       const streamModes = normalizeStreamModes(body.stream_mode);
       const streamSubgraphs = Boolean(body.stream_subgraphs);
       let interrupted = false;
 
       try {
-        writeSSE(reply, eventId++, "metadata", {
+        emitRunStreamEvent(runKey, "metadata", {
           run_id: run.run_id,
           thread_id: threadId,
           assistant_id: body.assistant_id,
@@ -780,6 +1794,7 @@ export const registerThreadRunRoutes = (
           ...buildRunnableConfig(threadId, body.config),
           version: "v2" as const,
           streamSubgraphs,
+          signal: abortController.signal,
         };
         const invokeInput = body.command
           ? new Command(body.command)
@@ -793,7 +1808,7 @@ export const registerThreadRunRoutes = (
 
           if (hasStreamMode(streamModes, "events")) {
             const serializedEvent = toSerializable(event);
-            writeSSE(reply, eventId++, "events", {
+            emitRunStreamEvent(runKey, "events", {
               run_id: run.run_id,
               event:
                 serializedEvent && typeof serializedEvent === "object"
@@ -807,12 +1822,12 @@ export const registerThreadRunRoutes = (
             const interruptData = toSerializable(event.data);
 
             if (hasStreamMode(streamModes, "updates")) {
-              writeSSE(reply, eventId++, "updates", {
+              emitRunStreamEvent(runKey, "updates", {
                 __interrupt__: interruptData,
               });
             }
 
-            writeSSE(reply, eventId++, "interrupts", interruptData);
+            emitRunStreamEvent(runKey, "interrupts", interruptData);
             break;
           }
 
@@ -823,10 +1838,10 @@ export const registerThreadRunRoutes = (
               const serializedOutput = toSerializable(output);
 
               if (hasStreamMode(streamModes, "values")) {
-                writeSSE(reply, eventId++, "values", serializedOutput);
+                emitRunStreamEvent(runKey, "values", serializedOutput);
               }
               if (hasStreamMode(streamModes, "updates")) {
-                writeSSE(reply, eventId++, "updates", serializedOutput);
+                emitRunStreamEvent(runKey, "updates", serializedOutput);
               }
             }
           }
@@ -844,10 +1859,10 @@ export const registerThreadRunRoutes = (
                 content: chunk.content,
               };
               if (hasStreamMode(streamModes, "messages")) {
-                writeSSE(reply, eventId++, "messages", [messageChunk]);
+                emitRunStreamEvent(runKey, "messages", [messageChunk]);
               }
               if (hasStreamMode(streamModes, "messages-tuple")) {
-                writeSSE(reply, eventId++, "messages-tuple", [
+                emitRunStreamEvent(runKey, "messages-tuple", [
                   messageChunk,
                   {
                     run_id: run.run_id,
@@ -866,11 +1881,11 @@ export const registerThreadRunRoutes = (
             eventName === "on_tool_error"
           ) {
             if (hasStreamMode(streamModes, "tasks")) {
-              writeSSE(reply, eventId++, "tasks", {
+              emitRunStreamEvent(runKey, "tasks", {
                 id:
                   typeof event.run_id === "string"
                     ? event.run_id
-                    : `${run.run_id}:${eventId}`,
+                    : `${run.run_id}:${Date.now()}`,
                 name: event.name,
                 status:
                   eventName === "on_tool_start"
@@ -887,7 +1902,7 @@ export const registerThreadRunRoutes = (
 
         const finalValues = await loadThreadValues(checkpointer, threadId);
         if (hasStreamMode(streamModes, "checkpoints")) {
-          writeSSE(reply, eventId++, "checkpoints", {
+          emitRunStreamEvent(runKey, "checkpoints", {
             values: finalValues,
           });
         }
@@ -898,19 +1913,293 @@ export const registerThreadRunRoutes = (
           threadId,
           interrupted ? "interrupted" : "idle",
         );
-        writeSSE(reply, eventId++, "end", {});
+        emitRunStreamEvent(runKey, "end", {});
+      } catch (error) {
+        if (abortController.signal.aborted) {
+          setRunStatus(run, "interrupted", "Run cancelled");
+          await updateThreadStatusSafe(threadRepository, threadId, "interrupted");
+          emitRunStreamEvent(runKey, "end", {});
+        } else {
+          const message =
+            error instanceof Error ? error.message : "Streaming run failed";
+          setRunStatus(run, "error", message);
+          await updateThreadStatusSafe(threadRepository, threadId, "error");
+          emitRunStreamEvent(runKey, "error", {
+            error: "StreamError",
+            message,
+          });
+          emitRunStreamEvent(runKey, "end", {});
+        }
+      } finally {
+        runAbortControllers.delete(runKey);
+        completeRunStream(runKey);
+      }
+    });
+
+  app.post("/threads/:thread_id/runs/wait", async (request, reply) => {
+      try {
+        const userId = getUserId(request);
+        const { thread_id: threadId } = request.params as { thread_id: string };
+        const body = (request.body || {}) as RunBody;
+
+        if (!body.assistant_id || typeof body.assistant_id !== "string") {
+          return reply.status(400).send({
+            error: "BadRequest",
+            message: "assistant_id is required",
+          });
+        }
+
+        const thread = await threadRepository.getThread(threadId, userId);
+        if (!thread) {
+          return reply.status(404).send({
+            error: "NotFound",
+            message: "Thread not found",
+          });
+        }
+
+        const run = createRun(threadId, body.assistant_id, body.metadata ?? {});
+        registerRun(run);
+        setRunStatus(run, "running");
+        await updateThreadStatusSafe(threadRepository, threadId, "busy");
+
+        try {
+          const graph = createGraph(checkpointer, llm);
+          const config = buildRunnableConfig(threadId, body.config);
+          const invokeInput = body.command
+            ? new Command(body.command)
+            : (body.input ?? {});
+          const result = await graph.invoke(invokeInput, config);
+
+          if (isInterruptedResult(result)) {
+            setRunStatus(run, "interrupted");
+            await updateThreadStatusSafe(threadRepository, threadId, "interrupted");
+          } else {
+            setRunStatus(run, "success");
+            await updateThreadStatusSafe(threadRepository, threadId, "idle");
+          }
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Run wait failed";
+          setRunStatus(run, "error", message);
+          await updateThreadStatusSafe(threadRepository, threadId, "error");
+        }
+
+        const state = await checkpointer
+          .getTuple({
+            configurable: { thread_id: threadId },
+          } as RunnableConfig)
+          .catch(() => undefined);
+
+        reply.header(
+          "Content-Location",
+          `/threads/${threadId}/runs/${run.run_id}`,
+        );
+        return reply.send(buildStateResponseFromTuple(threadId, state).values);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Failed to wait for run";
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
+  app.post("/runs/stream", async (request, reply) => {
+      const body = (request.body || {}) as RunBody;
+      if (!body.assistant_id || typeof body.assistant_id !== "string") {
+        return reply.status(400).send({
+          error: "BadRequest",
+          message: "assistant_id is required",
+        });
+      }
+
+      const run = createRun(STATELESS_THREAD_ID, body.assistant_id, body.metadata ?? {});
+      const runKey = getStatelessRunKey(run.run_id);
+      registerRun(run);
+      setRunStatus(run, "running");
+      resetRunStream(runKey);
+      attachRunStreamListener(runKey, reply, 0, {
+        "Content-Location": `/runs/${run.run_id}`,
+      });
+
+      const streamModes = normalizeStreamModes(body.stream_mode);
+
+      try {
+        emitRunStreamEvent(runKey, "metadata", {
+          run_id: run.run_id,
+          assistant_id: body.assistant_id,
+        });
+
+        const graph = createGraph(checkpointer, llm);
+        const invokeInput = body.command
+          ? new Command(body.command)
+          : (body.input ?? {});
+        const result = await graph.invoke(invokeInput, body.config as RunnableConfig);
+
+        const serialized = toSerializable(result);
+        if (hasStreamMode(streamModes, "values")) {
+          emitRunStreamEvent(runKey, "values", serialized);
+        }
+        if (hasStreamMode(streamModes, "updates")) {
+          emitRunStreamEvent(runKey, "updates", serialized);
+        }
+
+        setRunStatus(run, isInterruptedResult(result) ? "interrupted" : "success");
+        emitRunStreamEvent(runKey, "end", {});
       } catch (error) {
         const message =
           error instanceof Error ? error.message : "Streaming run failed";
         setRunStatus(run, "error", message);
-        await updateThreadStatusSafe(threadRepository, threadId, "error");
-        writeSSE(reply, eventId++, "error", {
+        emitRunStreamEvent(runKey, "error", {
           error: "StreamError",
           message,
         });
-        writeSSE(reply, eventId++, "end", {});
+        emitRunStreamEvent(runKey, "end", {});
       } finally {
-        reply.raw.end();
+        completeRunStream(runKey);
       }
+    });
+
+  app.post("/runs", async (request, reply) => {
+      const body = (request.body || {}) as RunBody;
+      if (!body.assistant_id || typeof body.assistant_id !== "string") {
+        return reply.status(400).send({
+          error: "BadRequest",
+          message: "assistant_id is required",
+        });
+      }
+
+      const run = createRun(STATELESS_THREAD_ID, body.assistant_id, body.metadata ?? {});
+      registerRun(run);
+      setRunStatus(run, "pending");
+
+      void (async () => {
+        setRunStatus(run, "running");
+        try {
+          const graph = createGraph(checkpointer, llm);
+          const invokeInput = body.command
+            ? new Command(body.command)
+            : (body.input ?? {});
+          const result = await graph.invoke(
+            invokeInput,
+            body.config as RunnableConfig,
+          );
+          setRunStatus(run, isInterruptedResult(result) ? "interrupted" : "success");
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Run execution failed";
+          setRunStatus(run, "error", message);
+        }
+      })();
+
+      reply.header("Content-Location", `/runs/${run.run_id}`);
+      return reply.send(run);
+    });
+
+  app.post("/runs/wait", async (request, reply) => {
+      const body = (request.body || {}) as RunBody;
+      if (!body.assistant_id || typeof body.assistant_id !== "string") {
+        return reply.status(400).send({
+          error: "BadRequest",
+          message: "assistant_id is required",
+        });
+      }
+
+      const run = createRun(STATELESS_THREAD_ID, body.assistant_id, body.metadata ?? {});
+      registerRun(run);
+      setRunStatus(run, "running");
+      try {
+        const graph = createGraph(checkpointer, llm);
+        const invokeInput = body.command
+          ? new Command(body.command)
+          : (body.input ?? {});
+        const result = await graph.invoke(invokeInput, body.config as RunnableConfig);
+        setRunStatus(run, isInterruptedResult(result) ? "interrupted" : "success");
+        reply.header("Content-Location", `/runs/${run.run_id}`);
+        return reply.send(toSerializable(result));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Run wait failed";
+        setRunStatus(run, "error", message);
+        return reply.status(500).send({
+          error: "InternalError",
+          message,
+        });
+      }
+    });
+
+  app.get("/runs/:run_id/stream", async (request, reply) => {
+      const { run_id: runId } = request.params as { run_id: string };
+      const run = getRunRecord(undefined, runId);
+      if (!run) {
+        return reply.status(404).send({
+          error: "NotFound",
+          message: "Run not found",
+        });
+      }
+
+      const runKey = getStatelessRunKey(runId);
+      const stream = getOrCreateRunStream(runKey);
+      if (stream.events.length === 0) {
+        emitRunStreamEvent(runKey, "metadata", {
+          run_id: run.run_id,
+          assistant_id: run.assistant_id,
+        });
+        emitRunStreamEvent(runKey, "end", {});
+        completeRunStream(runKey);
+      }
+
+      const lastEventId = getLastEventId(request);
+      attachRunStreamListener(runKey, reply, lastEventId);
+    });
+
+  app.post("/runs/batch", async (request, reply) => {
+      const payload = (request.body || []) as RunBody[];
+      if (!Array.isArray(payload)) {
+        return reply.status(400).send({
+          error: "BadRequest",
+          message: "Body must be an array",
+        });
+      }
+
+      const results: RunRecord[] = [];
+      for (const body of payload) {
+        if (!body.assistant_id || typeof body.assistant_id !== "string") {
+          continue;
+        }
+        const run = createRun(
+          STATELESS_THREAD_ID,
+          body.assistant_id,
+          body.metadata ?? {},
+        );
+        registerRun(run);
+        setRunStatus(run, "pending");
+        results.push(run);
+      }
+      return reply.send(results);
+    });
+
+  app.get("/threads/:thread_id/stream", async (request, reply) => {
+      const userId = getUserId(request);
+      const { thread_id: threadId } = request.params as { thread_id: string };
+      const thread = await threadRepository.getThread(threadId, userId);
+      if (!thread) {
+        return reply.status(404).send({
+          error: "NotFound",
+          message: "Thread not found",
+        });
+      }
+
+      const latestRun = listRunsByThread(threadId, { limit: 1, offset: 0 })[0];
+      if (!latestRun) {
+        setupSSEHeaders(reply);
+        writeSSE(reply, 1, "end", {});
+        reply.raw.end();
+        return;
+      }
+
+      const runKey = getRunKey(threadId, latestRun.run_id);
+      const lastEventId = getLastEventId(request);
+      attachRunStreamListener(runKey, reply, lastEventId);
     });
 };

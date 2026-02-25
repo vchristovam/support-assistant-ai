@@ -30,6 +30,18 @@ describe("Fastify Server", () => {
     expect(JSON.parse(response.body)).toEqual({ status: "ok" });
   });
 
+  it("GET /info should return server metadata", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/info",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.version).toBeDefined();
+    expect(body.flags).toBeDefined();
+  });
+
   it("POST /threads should create a new thread", async () => {
     const response = await app.inject({
       method: "POST",
@@ -90,6 +102,32 @@ describe("Fastify Server", () => {
     ).toBe(true);
   });
 
+  it("POST /threads/search should return an array", async () => {
+    const userId = "search-user";
+    await app.inject({
+      method: "POST",
+      url: "/threads",
+      headers: { "x-user-id": userId },
+      payload: { metadata: { feature: "search" } },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/threads/search",
+      headers: { "x-user-id": userId },
+      payload: {
+        limit: 10,
+        offset: 0,
+        metadata: { feature: "search" },
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(Array.isArray(body)).toBe(true);
+    expect(body.length).toBeGreaterThan(0);
+  });
+
   it("GET /threads/:thread_id should return thread", async () => {
     const createResponse = await app.inject({
       method: "POST",
@@ -141,6 +179,25 @@ describe("Fastify Server", () => {
     const historyResponse = await app.inject({
       method: "GET",
       url: `/threads/${thread_id}/history`,
+    });
+
+    expect(historyResponse.statusCode).toBe(200);
+    const body = JSON.parse(historyResponse.body);
+    expect(Array.isArray(body)).toBe(true);
+  });
+
+  it("POST /threads/:thread_id/history should return an array", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/threads",
+      payload: {},
+    });
+    const { thread_id } = JSON.parse(createResponse.body);
+
+    const historyResponse = await app.inject({
+      method: "POST",
+      url: `/threads/${thread_id}/history`,
+      payload: { limit: 10 },
     });
 
     expect(historyResponse.statusCode).toBe(200);
@@ -200,4 +257,96 @@ describe("Fastify Server", () => {
     );
     expect(streamResponse.body).toContain("event: metadata");
   }, 30_000);
+
+  it("POST /threads/:thread_id/runs/:run_id/cancel should return run", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/threads",
+      payload: {},
+    });
+    const { thread_id } = JSON.parse(createResponse.body);
+
+    const runResponse = await app.inject({
+      method: "POST",
+      url: `/threads/${thread_id}/runs`,
+      payload: {
+        assistant_id: "agent",
+        input: {
+          messages: [{ type: "human", content: "hello" }],
+        },
+      },
+    });
+    const run = JSON.parse(runResponse.body);
+
+    const cancelResponse = await app.inject({
+      method: "POST",
+      url: `/threads/${thread_id}/runs/${run.run_id}/cancel`,
+    });
+
+    expect(cancelResponse.statusCode).toBe(200);
+    const canceled = JSON.parse(cancelResponse.body);
+    expect(canceled.run_id).toBe(run.run_id);
+  });
+
+  it("GET /threads/:thread_id/runs/:run_id/join should return run", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/threads",
+      payload: {},
+    });
+    const { thread_id } = JSON.parse(createResponse.body);
+
+    const runResponse = await app.inject({
+      method: "POST",
+      url: `/threads/${thread_id}/runs`,
+      payload: {
+        assistant_id: "agent",
+        input: {
+          messages: [{ type: "human", content: "hello" }],
+        },
+      },
+    });
+    const run = JSON.parse(runResponse.body);
+
+    const joinResponse = await app.inject({
+      method: "GET",
+      url: `/threads/${thread_id}/runs/${run.run_id}/join`,
+    });
+
+    expect(joinResponse.statusCode).toBe(200);
+    const joined = JSON.parse(joinResponse.body);
+    expect(joined.run_id).toBe(run.run_id);
+  });
+
+  it("GET /threads/:thread_id/runs/:run_id/stream should return SSE stream", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/threads",
+      payload: {},
+    });
+    const { thread_id } = JSON.parse(createResponse.body);
+
+    const runResponse = await app.inject({
+      method: "POST",
+      url: `/threads/${thread_id}/runs`,
+      payload: {
+        assistant_id: "agent",
+        input: {
+          messages: [{ type: "human", content: "hello" }],
+        },
+      },
+    });
+    const run = JSON.parse(runResponse.body);
+
+    const streamResponse = await app.inject({
+      method: "GET",
+      url: `/threads/${thread_id}/runs/${run.run_id}/stream`,
+    });
+
+    expect(streamResponse.statusCode).toBe(200);
+    expect(streamResponse.headers["content-type"]).toContain(
+      "text/event-stream",
+    );
+    expect(streamResponse.body).toContain("event: metadata");
+  });
 });
