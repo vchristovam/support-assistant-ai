@@ -1,42 +1,36 @@
 import Fastify from "fastify";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import swagger from "@fastify/swagger";
-import swaggerUi from "@fastify/swagger-ui";
 import { config } from "../config/index.js";
-import { swaggerConfig, swaggerUiConfig } from "./swagger.js";
 import { initializeInfrastructure } from "./infrastructure.js";
 import { registerAuthHook } from "./middleware/auth.js";
-import { registerChatRoutes } from "./routes/chat.js";
-import { registerThreadRoutes } from "./routes/threads.js";
-import { registerRunRoutes } from "./routes/runs.js";
-import { registerHealthRoute } from "./routes/health.js";
-import { registerSupportRoutes } from "./routes/support.js";
+import { registerTelemetry } from "./middleware/telemetry.js";
+import { registerConversationRoutes } from "./conversations.js";
 
 export const createApp = async (llm?: BaseChatModel) => {
   const app = Fastify({ logger: true });
-
-  // Register Swagger plugins
-  await app.register(swagger, swaggerConfig);
-  await app.register(swaggerUi, swaggerUiConfig);
 
   // Initialize infrastructure (checkpointer, SQL pool, repositories)
   const { checkpointer, threadRepository, conversationRepository } =
     await initializeInfrastructure();
 
-  // Register authentication middleware
+  // Register authentication and telemetry middleware
   registerAuthHook(app);
+  registerTelemetry(app);
 
-  // Register routes
-  registerHealthRoute(app);
-  registerChatRoutes(app, llm, checkpointer);
-  registerThreadRoutes(
-    app,
+  if (!threadRepository || !conversationRepository) {
+    throw new Error(
+      "SQL Server is required for conversation persistence. " +
+        "Please configure SQL_SERVER_HOST, SQL_SERVER_DATABASE, " +
+        "SQL_SERVER_USER, and SQL_SERVER_PASSWORD.",
+    );
+  }
+
+  registerConversationRoutes(app, {
     threadRepository,
     conversationRepository,
     checkpointer,
-  );
-  registerRunRoutes(app, llm, threadRepository, checkpointer);
-  registerSupportRoutes(app, llm, checkpointer);
+    llm,
+  });
 
   return app;
 };
