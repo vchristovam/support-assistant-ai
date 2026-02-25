@@ -1,10 +1,11 @@
 import Fastify from "fastify";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { config } from "../config/index.js";
+import { registerOpenApiDocs } from "./docs.js";
 import { initializeInfrastructure } from "./infrastructure.js";
 import { registerAuthHook } from "./middleware/auth.js";
 import { registerCorsHook } from "./middleware/cors.js";
-import { registerTelemetry } from "./middleware/telemetry.js";
+import { registerTelemetryHook } from "./middleware/telemetry.js";
 import { registerThreadRunRoutes } from "./threadRuns.js";
 
 export const createApp = async (llm?: BaseChatModel) => {
@@ -18,7 +19,10 @@ export const createApp = async (llm?: BaseChatModel) => {
 
   // Register authentication and telemetry middleware
   registerAuthHook(app);
-  registerTelemetry(app);
+  registerTelemetryHook(app);
+
+  // Register OpenAPI/Swagger documentation routes.
+  await registerOpenApiDocs(app);
 
   registerThreadRunRoutes(app, {
     threadRepository,

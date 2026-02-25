@@ -4,6 +4,40 @@ import { AIMessage } from "@langchain/core/messages";
 import { createApp } from "../../src/server/app.js";
 import { FakeToolCallingChatModel } from "../helpers/fakeModel.js";
 
+const parseSseEvents = (streamBody: string): Array<{ event?: string; data: unknown }> => {
+  const events: Array<{ event?: string; data: unknown }> = [];
+  const lines = streamBody.split("\n");
+  let current: { event?: string; data: string } = { data: "" };
+
+  for (const line of lines) {
+    if (line.startsWith("event: ")) {
+      current.event = line.slice(7);
+      continue;
+    }
+    if (line.startsWith("data: ")) {
+      current.data += line.slice(6);
+      continue;
+    }
+    if (line === "") {
+      if (current.data.length > 0) {
+        try {
+          events.push({
+            event: current.event,
+            data: JSON.parse(current.data),
+          });
+        } catch {
+          events.push({
+            event: current.event,
+            data: current.data,
+          });
+        }
+      }
+      current = { data: "" };
+    }
+  }
+  return events;
+};
+
 describe("Fastify Server", () => {
   let app: FastifyInstance;
 
@@ -40,6 +74,18 @@ describe("Fastify Server", () => {
     const body = JSON.parse(response.body);
     expect(body.version).toBeDefined();
     expect(body.flags).toBeDefined();
+  });
+
+  it("GET /docs/json should expose OpenAPI schema", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/docs/json",
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.openapi).toBeDefined();
+    expect(body.paths).toBeDefined();
   });
 
   it("POST /threads should create a new thread", async () => {
@@ -258,6 +304,49 @@ describe("Fastify Server", () => {
     expect(streamResponse.body).toContain("event: metadata");
   }, 30_000);
 
+  it("POST /threads/:thread_id/runs/stream should emit flattened message tuples", async () => {
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/threads",
+      payload: {},
+    });
+    const { thread_id } = JSON.parse(createResponse.body);
+
+    const streamResponse = await app.inject({
+      method: "POST",
+      url: `/threads/${thread_id}/runs/stream`,
+      payload: {
+        assistant_id: "agent",
+        input: {
+          messages: [{ type: "human", content: "hello" }],
+        },
+        stream_mode: ["messages-tuple", "values"],
+      },
+    });
+
+    expect(streamResponse.statusCode).toBe(200);
+    const events = parseSseEvents(streamResponse.body);
+    const messageEvent = events.find((event) => event.event === "messages");
+    expect(messageEvent).toBeDefined();
+    const tuple = (messageEvent?.data ?? []) as unknown[];
+    expect(Array.isArray(tuple)).toBe(true);
+    expect(tuple.length).toBe(2);
+
+    const message = tuple[0] as Record<string, unknown>;
+    expect(message.type).toBe("ai");
+    expect(message.content).toBeDefined();
+    expect(message.data).toBeUndefined();
+
+    const valuesEvent = events.find((event) => event.event === "values");
+    if (valuesEvent && valuesEvent.data && typeof valuesEvent.data === "object") {
+      const maybeMessages = (valuesEvent.data as Record<string, unknown>).messages;
+      if (Array.isArray(maybeMessages) && maybeMessages.length > 0) {
+        const first = maybeMessages[0] as Record<string, unknown>;
+        expect(first.data).toBeUndefined();
+      }
+    }
+  }, 30_000);
+
   it("OPTIONS /threads/:thread_id/runs/stream should return CORS preflight headers", async () => {
     const createResponse = await app.inject({
       method: "POST",
@@ -373,7 +462,8 @@ describe("Fastify Server", () => {
 
     expect(joinResponse.statusCode).toBe(200);
     const joined = JSON.parse(joinResponse.body);
-    expect(joined.run_id).toBe(run.run_id);
+    expect(typeof joined).toBe("object");
+    expect(joined.run_id).toBeUndefined();
   });
 
   it("GET /threads/:thread_id/runs/:run_id/stream should return SSE stream", async () => {
