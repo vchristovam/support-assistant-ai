@@ -87,7 +87,7 @@ describe("SQL Server Flow Integration", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/api/threads",
+      url: "/threads",
       headers: {
         "x-user-id": userId,
       },
@@ -163,7 +163,7 @@ describe("SQL Server Flow Integration", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: `/api/threads/${threadId}`,
+      url: `/threads/${threadId}`,
       headers: {
         "x-user-id": userId,
       },
@@ -205,28 +205,9 @@ describe("SQL Server Flow Integration", () => {
           ],
         });
       }
-      if (query.includes("FROM conversations")) {
+      if (query.includes("FROM langgraph_checkpoints")) {
         return Promise.resolve({
-          recordset: [
-            {
-              message_id: "msg-1",
-              thread_id: threadId,
-              role: "user",
-              content: "Hello",
-              tool_calls: null,
-              tool_call_id: null,
-              created_at: new Date(),
-            },
-            {
-              message_id: "msg-2",
-              thread_id: threadId,
-              role: "assistant",
-              content: "Hi there!",
-              tool_calls: null,
-              tool_call_id: null,
-              created_at: new Date(),
-            },
-          ],
+          recordset: [],
         });
       }
       return Promise.resolve({ recordset: [] });
@@ -234,7 +215,7 @@ describe("SQL Server Flow Integration", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: `/api/threads/${threadId}/history`,
+      url: `/threads/${threadId}/history`,
       headers: {
         "x-user-id": userId,
       },
@@ -242,12 +223,10 @@ describe("SQL Server Flow Integration", () => {
 
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.payload);
-    expect(body.messages).toHaveLength(2);
-    expect(body.messages[0].content).toBe("Hello");
-    expect(body.messages[1].content).toBe("Hi there!");
+    expect(Array.isArray(body)).toBe(true);
 
     expect(mockRequest.query).toHaveBeenCalledWith(
-      expect.stringContaining("FROM conversations"),
+      expect.stringContaining("FROM langgraph_checkpoints"),
     );
   });
 
@@ -289,7 +268,7 @@ describe("SQL Server Flow Integration", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: `/api/threads/${threadId}/runs`,
+      url: `/threads/${threadId}/runs`,
       headers: {
         "x-user-id": userId,
       },

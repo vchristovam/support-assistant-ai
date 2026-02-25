@@ -7,12 +7,14 @@ import {
 } from "../graph/index.js";
 import type { SqlServerConfig } from "../checkpointer/sqlserver.js";
 import { config } from "../config/index.js";
+import type { IThreadRepository } from "../repositories/threadRepository.js";
 import { ThreadRepository } from "../repositories/threadRepository.js";
 import { ConversationRepository } from "../repositories/conversationRepository.js";
+import { InMemoryThreadRepository } from "../repositories/inMemoryThreadRepository.js";
 
 export interface Infrastructure {
   checkpointer: BaseCheckpointSaver;
-  threadRepository?: ThreadRepository;
+  threadRepository: IThreadRepository;
   conversationRepository?: ConversationRepository;
   sqlPool?: sql.ConnectionPool;
 }
@@ -49,7 +51,7 @@ export const initializeInfrastructure = async (): Promise<Infrastructure> => {
   }
 
   // Initialize SQL Server connection pool and repositories
-  let threadRepository: ThreadRepository | undefined;
+  let threadRepository: IThreadRepository = new InMemoryThreadRepository();
   let conversationRepository: ConversationRepository | undefined;
   let sqlPool: sql.ConnectionPool | undefined;
 
@@ -81,12 +83,12 @@ export const initializeInfrastructure = async (): Promise<Infrastructure> => {
       console.log("Connected to SQL Server for thread persistence");
     } else {
       console.log(
-        "SQL Server not configured, using in-memory fallback for thread metadata",
+        "SQL Server not configured, using in-memory thread repository",
       );
     }
   } catch (error) {
     console.error(
-      "Failed to initialize SQL Server connection, using fallback:",
+      "Failed to initialize SQL Server connection, using in-memory fallback:",
       error,
     );
   }

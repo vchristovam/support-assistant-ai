@@ -7,6 +7,7 @@ export {
   type ListThreadsOptions,
   type IThreadRepository,
 } from "./threadRepository.js";
+export { InMemoryThreadRepository } from "./inMemoryThreadRepository.js";
 
 export {
   ConversationRepository,
